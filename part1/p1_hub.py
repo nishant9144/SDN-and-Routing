@@ -32,13 +32,6 @@ class HubController(app_manager.RyuApp):
         datapath.send_msg(mod)
         self.logger.info("Table-miss installed on %s", datapath.id)
 
-    """
-    This is called when Ryu receives an OpenFlow packet_in message. 
-    The trick is the 'set_ev_cls' decorator. 
-    This decorator tells Ryu when the decorated function should be called.
-
-    Every time Ryu gets a packet_in message, this function is called.
-    """
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         msg = ev.msg
