@@ -30,8 +30,10 @@ class CustomTopo(Topo):
 def run():
     """Create the network, start it, and enter the CLI."""
     topo = CustomTopo()
+    #! Here we will use our learning switch
     net = Mininet(topo=topo, switch=OVSSwitch, build=False, controller=None,
               autoSetMacs=True, autoStaticArp=True)
+    #! Maybe we have to set our controller here!!
     net.addController('c0', controller=RemoteController, ip="127.0.0.1", protocol='tcp', port=6633)
     net.build()
     net.start()
