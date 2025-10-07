@@ -6,8 +6,9 @@ from ryu.lib.packet import packet, ethernet, ether_types
 
 class LearningSwitch(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+    
     # timeouts for installed flows (seconds)
-    IDLE_TIMEOUT = 10
+    IDLE_TIMEOUT = 30
     HARD_TIMEOUT = 0
 
     def __init__(self, *args, **kwargs):
@@ -47,6 +48,8 @@ class LearningSwitch(app_manager.RyuApp):
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocol(ethernet.ethernet)
+
+
         if eth is None:
             return
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:

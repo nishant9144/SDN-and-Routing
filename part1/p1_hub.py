@@ -6,19 +6,22 @@ from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, ether_types
 
 class HubController(app_manager.RyuApp):
+    """ To use OpenFlow 1.3, the OpenFlow 1.3 version is specified for OFP_VERSIONS. """
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
         super(HubController, self).__init__(*args, **kwargs)
+        #* MAC address table
         # mac_to_port: dpid -> { mac -> port_no }
         self.mac_to_port = {}
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         # Install a table-miss flow that sends unmatched packets to controller.
-        datapath = ev.msg.datapath
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
+        #* In ev.msg, the instance of the OpenFlow message class corresponding to the event is stored.
+        datapath = ev.msg.datapath #* In msg.datapath, the instance of the ryu.controller.controller.Datapath class corresponding to the OpenFlow switch that issued this message is stored.
+        ofproto = datapath.ofproto #* ryu.ofproto.ofproto_v1_3
+        parser = datapath.ofproto_parser #* ryu.ofproto.ofproto_v1_3_parser
 
         # match any, send to controller
         match = parser.OFPMatch()
@@ -30,7 +33,7 @@ class HubController(app_manager.RyuApp):
                                 match=match,
                                 instructions=inst)
         datapath.send_msg(mod)
-        self.logger.info("Table-miss installed on %s", datapath.id)
+        self.logger.info("Table-miss installed on %s", datapath.id) 
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -64,8 +67,8 @@ class HubController(app_manager.RyuApp):
 
             data = None
             # If the packet is buffered at the switch, no need to send data payload
-            if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-                data = msg.data
+            # if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+            #     data = msg.data
 
             out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                       in_port=in_port, actions=actions, data=data)
@@ -75,8 +78,8 @@ class HubController(app_manager.RyuApp):
             actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
             self.logger.debug("Flooding packet for dst %s", dst)
             data = None
-            if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-                data = msg.data
+            # if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+            #     data = msg.data
             out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                       in_port=in_port, actions=actions, data=data)
             datapath.send_msg(out)

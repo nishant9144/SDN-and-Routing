@@ -1,1 +1,13 @@
 https://book.ryu-sdn.org/en/html/switching_hub.html
+
+iperf h1 h3
+sh ovs-ofctl -O OpenFlow13 dump-flows s2
+
+
+I think that this should happen: when h1 send the packet to s1, it learns about h1 and adds the flow of the h1 in s1. The controller doesnt 
+
+
+Useful mininet commands:
+1. links -> show all the links
+2. intfs -> show all the interfaces
+3. dump -> Show the mac addresses and the IP

@@ -4,6 +4,8 @@ from mininet.log import setLogLevel, info
 from mininet.cli import CLI
 from mininet.node import RemoteController, OVSSwitch
 
+#TODO: I can have custom mac addresses for the host for proper understanding in the flow table
+
 class CustomTopo(Topo):
     def build(self):
         # Add two switches
@@ -30,10 +32,8 @@ class CustomTopo(Topo):
 def run():
     """Create the network, start it, and enter the CLI."""
     topo = CustomTopo()
-    #! Here we will use our learning switch
     net = Mininet(topo=topo, switch=OVSSwitch, build=False, controller=None,
               autoSetMacs=True, autoStaticArp=True)
-    #! Maybe we have to set our controller here!!
     net.addController('c0', controller=RemoteController, ip="127.0.0.1", protocol='tcp', port=6633)
     net.build()
     net.start()
@@ -49,4 +49,3 @@ if __name__ == '__main__':
     # Set log level to display Mininet output
     setLogLevel('info')
     run()
-
