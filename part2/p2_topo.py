@@ -6,6 +6,7 @@ from mininet.node import RemoteController, OVSSwitch
 
 class CustomTopo(Topo):
     def build(self):
+        bw = 10 #bandwidth in Mbps
         # Add two switches
         s1 = self.addSwitch('s1')
         s2 = self.addSwitch('s2')
@@ -23,12 +24,12 @@ class CustomTopo(Topo):
         self.addLink(h2, s6)
 
         # Connect switches with each other
-        self.addLink(s1, s2)
-        self.addLink(s1, s3)
-        self.addLink(s2, s4)
-        self.addLink(s3, s5)
-        self.addLink(s4, s6)
-        self.addLink(s5, s6)
+        self.addLink(s1, s2, bw=bw)
+        self.addLink(s1, s3, bw=bw)
+        self.addLink(s2, s4, bw=bw)
+        self.addLink(s3, s5, bw=bw)
+        self.addLink(s4, s6, bw=bw)
+        self.addLink(s5, s6, bw=bw)
         
 def run():
     """Create the network, start it, and enter the CLI."""
