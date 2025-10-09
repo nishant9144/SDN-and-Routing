@@ -14,7 +14,7 @@ from collections import defaultdict
 class L2ShortestPath(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
-    IDLE_TIMEOUT = 10
+    IDLE_TIMEOUT = 50
     HARD_TIMEOUT = 0
 
     def __init__(self, *args, **kwargs):
@@ -30,26 +30,14 @@ class L2ShortestPath(app_manager.RyuApp):
             self.node_list = self.config.get('nodes', [])
             self.weight_matrix = self.config.get('weight_matrix', [])
 
-        # speed up index lookup
         self.name_to_index = {name: i for i, name in enumerate(self.node_list)} if self.node_list else {}
-
-        # Topology / runtime state
-        # adjacency: dpid -> neighbor_dpid -> {'port': port_no, 'weight': cost}
         self.adjacency = defaultdict(dict)
-
-        # datapath registry
         self.datapaths = {}
-
-        # mac_to_port like your LearningSwitch (per-switch mac learning)
-        self.mac_to_port = {}  # dpid -> {mac: port}
-
-        # host location map: mac -> (dpid, port)
+        self.mac_to_port = {} 
         self.hosts = {}
-
-        # mapping dpid -> switch name (mininet 's1' etc). Populated on switch enter.
         self.dpid_to_name = {}
 
-        self.logger.info("L2ShortestPath initialized. ECMP=%s", self.ecmp_enabled)
+        self.logger.info("ShortestPath initialized. ECMP=%s", self.ecmp_enabled)
 
     def _read_config(self, config_file):
         path = config_file or "config.json"
@@ -59,7 +47,6 @@ class L2ShortestPath(app_manager.RyuApp):
         try:
             with open(path) as f:
                 cfg = json.load(f)
-            self.logger.info("Loaded config %s", path)
             return cfg
         except Exception as e:
             self.logger.error("Error reading config %s: %s", path, e)
@@ -71,16 +58,14 @@ class L2ShortestPath(app_manager.RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
-        # install table-miss -> send to controller
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=0, match=match, instructions=inst)
         datapath.send_msg(mod)
-        self.logger.info("Table-miss installed on %s", datapath.id)
+        self.logger.info("[SWITCH_FEATURES] table-miss installed dpid=%s", datapath.id)
 
-    # add_flow matches your LearningSwitch function signature
-    def add_flow(self, datapath, priority, match, actions, idle_timeout=0, hard_timeout=0):
+    def add_flow(self, datapath, priority, match, actions, idle_timeout=0, hard_timeout=0, dst=None):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
@@ -88,6 +73,9 @@ class L2ShortestPath(app_manager.RyuApp):
                                 match=match, instructions=inst,
                                 idle_timeout=idle_timeout, hard_timeout=hard_timeout)
         datapath.send_msg(mod)
+        if dst:
+            self.logger.info("[FLOW_INSTALL] dpid=%s eth_dst=%s -> out=%s idle=%s",
+                             datapath.id, dst, actions[0].port if actions else "-", idle_timeout)
 
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def _state_change_handler(self, ev):
@@ -145,7 +133,6 @@ class L2ShortestPath(app_manager.RyuApp):
         self.logger.info("Link removed %s <-> %s", src_dpid, dst_dpid)
 
     def _weight_between(self, dpid_a, dpid_b):
-        # robust mapping: get name from dpid_to_name, else guess s{dpid}
         if not self.weight_matrix or not self.node_list:
             return None
         name_a = self.dpid_to_name.get(dpid_a, f"s{int(dpid_a)}")
@@ -155,7 +142,6 @@ class L2ShortestPath(app_manager.RyuApp):
         if ia is None or ib is None:
             return None
         w = self.weight_matrix[ia][ib]
-        # treat 0 as no-link (same as earlier)
         return None if w == 0 else w
 
     def _dijkstra_all_predecessors(self, src):
@@ -263,9 +249,7 @@ class L2ShortestPath(app_manager.RyuApp):
         if eth.ethertype == 0x88cc:
             return
 
-        # initialize mac_to_port entry for this switch
         self.mac_to_port.setdefault(dpid, {})
-        # learn source MAC -> in_port
         self.mac_to_port[dpid][src] = in_port
 
         # update host global mapping
@@ -306,6 +290,7 @@ class L2ShortestPath(app_manager.RyuApp):
         # compute all shortest paths and pick one (ECMP if enabled)
         paths = self._get_shortest_paths(src_sw, dst_sw)
         if not paths:
+            #! This is wrong -> giving error
             self.logger.warning("No path between %s and %s", src_sw, dst_sw)
             actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
             data = None
