@@ -18,3 +18,13 @@ The “buffer” is in the switch, not in Ryu.
 A packet misses the flow table. The switch may store (buffer) the full packet in its own memory and send the controller only a PacketIn containing a buffer_id plus (often) just the headers.
 Controller replies (PacketOut or FlowMod) referencing that buffer_id so the switch can forward the already‑stored packet without the controller resending the payload.
 If the switch did NOT buffer the packet, it sets buffer_id = OFP_NO_BUFFER and includes the entire packet bytes in msg.data. Then the controller MUST put the bytes back into the PacketOut (data=msg.data) because the switch has no copy.
+
+
+h2 iperf -s &
+h1 iperf -c h2 -t 10 -P 2
+
+
+USAGE: ryu-manager --observe-links p2_l2spf.py
+The --observe-links flag is a shortcut provided by ryu-manager. 
+When you use it, you are telling Ryu to automatically load its built-in link discovery service.
+
