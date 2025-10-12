@@ -4,7 +4,7 @@ from ryu.controller.handler import MAIN_DISPATCHER, DEAD_DISPATCHER, CONFIG_DISP
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet
 from ryu.topology import event
-from ryu.topology.api import get_all_switch, get_all_link
+from ryu.topology.api import get_all_switch
 import heapq
 import json
 import os
