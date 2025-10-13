@@ -2,7 +2,7 @@ from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, DEAD_DISPATCHER, CONFIG_DISPATCHER, set_ev_cls
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet
+from ryu.lib.packet import packet, ethernet, ipv4, tcp, udp
 from ryu.topology import event
 from ryu.topology.api import get_all_switch
 import heapq
@@ -32,6 +32,10 @@ class Controller(app_manager.RyuApp):
         self.datapaths = {}
         self.hosts = {}  # mac -> (dpid, port)
         self.dpid_to_name = {}
+        
+        # Track installed ECMP groups: (dpid, src_mac, dst_mac) -> group_id
+        self.ecmp_groups = {}
+        self.group_id_counter = 1
 
         self.logger.info("L2 Shortest Path Controller initialized. ECMP=%s", self.ecmp_enabled)
 
@@ -59,11 +63,21 @@ class Controller(app_manager.RyuApp):
         self.add_flow(datapath, 0, match, actions)
         self.logger.info("Table-miss flow installed on switch dpid=%s", datapath.id)
 
-    def add_flow(self, datapath, priority, match, actions, idle_timeout=0, hard_timeout=0):
+    def add_flow(self, datapath, priority, match, actions=None, group_id=None, idle_timeout=0, hard_timeout=0):
         """Install a flow entry on the switch."""
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        
+        if group_id is not None:
+            # Use group table for ECMP
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, []),
+                    parser.OFPInstructionGotoTable(table_id=1)]
+            # Actually, we need to use GROUP action
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, 
+                                                 [parser.OFPActionGroup(group_id)])]
+        else:
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        
         mod = parser.OFPFlowMod(
             datapath=datapath,
             priority=priority,
@@ -73,6 +87,20 @@ class Controller(app_manager.RyuApp):
             hard_timeout=hard_timeout
         )
         datapath.send_msg(mod)
+
+    def add_group(self, datapath, group_id, buckets):
+        """Install a select group for ECMP."""
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        
+        req = parser.OFPGroupMod(
+            datapath=datapath,
+            command=ofproto.OFPGC_ADD,
+            type_=ofproto.OFPGT_SELECT,
+            group_id=group_id,
+            buckets=buckets
+        )
+        datapath.send_msg(req)
 
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def _state_change_handler(self, ev):
@@ -215,65 +243,163 @@ class Controller(app_manager.RyuApp):
         backtrack(dst, [])
         return all_paths
 
-    def _install_path(self, path, src_mac, dst_mac):
-        """Install flow rules along the entire path for both directions."""
-        if not path:
+    def _install_path_with_ecmp(self, paths, src_mac, dst_mac):
+        """Install flow rules with ECMP using select groups."""
+        if not paths:
             return
         
-        # Forward direction: src -> dst
-        for i, dpid in enumerate(path):
-            datapath = self.datapaths.get(dpid)
-            if not datapath:
-                continue
-            
-            parser = datapath.ofproto_parser
-            
-            # Determine output port
-            if i == len(path) - 1:
-                # Last switch: output to destination host
-                dst_loc = self.hosts.get(dst_mac)
-                if dst_loc and dst_loc[0] == dpid:
-                    out_port = dst_loc[1]
-                else:
-                    continue
-            else:
-                # Intermediate switch: output to next switch
-                next_dpid = path[i + 1]
-                out_port = self.adjacency[dpid][next_dpid]['port']
-            
-            match = parser.OFPMatch(eth_dst=dst_mac)
-            actions = [parser.OFPActionOutput(out_port)]
-            self.add_flow(datapath, 1, match, actions, 
-                         idle_timeout=self.IDLE_TIMEOUT, 
-                         hard_timeout=self.HARD_TIMEOUT)
+        self.logger.info("Installing ECMP paths: %s for %s -> %s", paths, src_mac, dst_mac)
         
-        # Reverse direction: dst -> src
-        reversed_path = list(reversed(path))
-        for i, dpid in enumerate(reversed_path):
+        # Group paths by switch position
+        # paths_by_switch[dpid] = list of (next_hop_dpid, out_port) options
+        paths_by_switch = defaultdict(lambda: defaultdict(set))
+        
+        for path in paths:
+            for i, dpid in enumerate(path):
+                if i == len(path) - 1:
+                    # Last switch: output to destination host
+                    dst_loc = self.hosts.get(dst_mac)
+                    if dst_loc and dst_loc[0] == dpid:
+                        paths_by_switch[dpid]['host'].add(dst_loc[1])
+                else:
+                    # Intermediate switch: output to next switch
+                    next_dpid = path[i + 1]
+                    out_port = self.adjacency[dpid][next_dpid]['port']
+                    paths_by_switch[dpid][next_dpid].add(out_port)
+        
+        # Install groups and flows for each switch
+        for dpid, next_hops in paths_by_switch.items():
             datapath = self.datapaths.get(dpid)
             if not datapath:
                 continue
             
             parser = datapath.ofproto_parser
+            ofproto = datapath.ofproto
             
-            # Determine output port
-            if i == len(reversed_path) - 1:
-                # Last switch: output to source host
-                src_loc = self.hosts.get(src_mac)
-                if src_loc and src_loc[0] == dpid:
-                    out_port = src_loc[1]
+            # Collect all possible output ports
+            out_ports = set()
+            for next_hop, ports in next_hops.items():
+                out_ports.update(ports)
+            
+            out_ports = list(out_ports)
+            
+            if len(out_ports) > 1 and self.ecmp_enabled:
+                # Multiple paths available, use select group
+                group_key = (dpid, src_mac, dst_mac)
+                
+                if group_key not in self.ecmp_groups:
+                    group_id = self.group_id_counter
+                    self.group_id_counter += 1
+                    self.ecmp_groups[group_key] = group_id
+                    
+                    # Create buckets for select group
+                    buckets = []
+                    for port in out_ports:
+                        actions = [parser.OFPActionOutput(port)]
+                        buckets.append(parser.OFPBucket(
+                            weight=100,  # Equal weight for all paths
+                            watch_port=ofproto.OFPP_ANY,
+                            watch_group=ofproto.OFPG_ANY,
+                            actions=actions
+                        ))
+                    
+                    self.add_group(datapath, group_id, buckets)
+                    self.logger.info("Created ECMP group %d on switch %d with %d buckets", 
+                                   group_id, dpid, len(buckets))
                 else:
-                    continue
+                    group_id = self.ecmp_groups[group_key]
+                
+                # Install flow to use the group
+                match = parser.OFPMatch(eth_dst=dst_mac)
+                self.add_flow(datapath, 10, match, group_id=group_id,
+                            idle_timeout=self.IDLE_TIMEOUT,
+                            hard_timeout=self.HARD_TIMEOUT)
             else:
-                # Intermediate switch: output to next switch
-                next_dpid = reversed_path[i + 1]
-                out_port = self.adjacency[dpid][next_dpid]['port']
+                # Single path or ECMP disabled, install direct flow
+                match = parser.OFPMatch(eth_dst=dst_mac)
+                actions = [parser.OFPActionOutput(out_ports[0])]
+                self.add_flow(datapath, 10, match, actions,
+                            idle_timeout=self.IDLE_TIMEOUT,
+                            hard_timeout=self.HARD_TIMEOUT)
+        
+        # Install reverse path
+        self._install_path_with_ecmp_reverse(paths, src_mac, dst_mac)
+
+    def _install_path_with_ecmp_reverse(self, paths, src_mac, dst_mac):
+        """Install reverse direction flows with ECMP."""
+        # Reverse all paths
+        reversed_paths = [list(reversed(p)) for p in paths]
+        
+        # Group paths by switch position for reverse direction
+        paths_by_switch = defaultdict(lambda: defaultdict(set))
+        
+        for path in reversed_paths:
+            for i, dpid in enumerate(path):
+                if i == len(path) - 1:
+                    # Last switch: output to source host
+                    src_loc = self.hosts.get(src_mac)
+                    if src_loc and src_loc[0] == dpid:
+                        paths_by_switch[dpid]['host'].add(src_loc[1])
+                else:
+                    # Intermediate switch: output to next switch
+                    next_dpid = path[i + 1]
+                    out_port = self.adjacency[dpid][next_dpid]['port']
+                    paths_by_switch[dpid][next_dpid].add(out_port)
+        
+        # Install groups and flows for each switch
+        for dpid, next_hops in paths_by_switch.items():
+            datapath = self.datapaths.get(dpid)
+            if not datapath:
+                continue
             
-            match = parser.OFPMatch(eth_dst=src_mac)
-            actions = [parser.OFPActionOutput(out_port)]
-            self.add_flow(datapath, 1, match, actions,
-                         idle_timeout=self.IDLE_TIMEOUT,
-                         hard_timeout=self.HARD_TIMEOUT)
+            parser = datapath.ofproto_parser
+            ofproto = datapath.ofproto
+            
+            # Collect all possible output ports
+            out_ports = set()
+            for next_hop, ports in next_hops.items():
+                out_ports.update(ports)
+            
+            out_ports = list(out_ports)
+            
+            if len(out_ports) > 1 and self.ecmp_enabled:
+                # Multiple paths available, use select group
+                group_key = (dpid, dst_mac, src_mac)  # Note: swapped for reverse
+                
+                if group_key not in self.ecmp_groups:
+                    group_id = self.group_id_counter
+                    self.group_id_counter += 1
+                    self.ecmp_groups[group_key] = group_id
+                    
+                    # Create buckets for select group
+                    buckets = []
+                    for port in out_ports:
+                        actions = [parser.OFPActionOutput(port)]
+                        buckets.append(parser.OFPBucket(
+                            weight=100,
+                            watch_port=ofproto.OFPP_ANY,
+                            watch_group=ofproto.OFPG_ANY,
+                            actions=actions
+                        ))
+                    
+                    self.add_group(datapath, group_id, buckets)
+                    self.logger.info("Created reverse ECMP group %d on switch %d with %d buckets", 
+                                   group_id, dpid, len(buckets))
+                else:
+                    group_id = self.ecmp_groups[group_key]
+                
+                # Install flow to use the group
+                match = parser.OFPMatch(eth_dst=src_mac)
+                self.add_flow(datapath, 10, match, group_id=group_id,
+                            idle_timeout=self.IDLE_TIMEOUT,
+                            hard_timeout=self.HARD_TIMEOUT)
+            else:
+                # Single path or ECMP disabled, install direct flow
+                match = parser.OFPMatch(eth_dst=src_mac)
+                actions = [parser.OFPActionOutput(out_ports[0])]
+                self.add_flow(datapath, 10, match, actions,
+                            idle_timeout=self.IDLE_TIMEOUT,
+                            hard_timeout=self.HARD_TIMEOUT)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -325,29 +451,34 @@ class Controller(app_manager.RyuApp):
             self._send_packet_out(datapath, msg, in_port, actions)
             return
         
-        # Select path based on ECMP setting
-        if self.ecmp_enabled and len(paths) > 1:
-            chosen_path = random.choice(paths)
-            self.logger.info("ECMP enabled: Selected path %s from %d equal-cost paths", 
-                           chosen_path, len(paths))
-        else:
-            chosen_path = paths[0]
-            self.logger.info("Selected path: %s", chosen_path)
+        self.logger.info("Found %d paths between %s and %s: %s", 
+                 len(paths), src_switch, dst_switch, paths)
         
-        # Install flow rules along the chosen path
-        self._install_path(chosen_path, src_mac, dst_mac)
+        if self.ecmp_enabled and len(paths) > 1:
+            self.logger.info("ECMP enabled: Installing rules for %d equal-cost paths", len(paths))
+            self._install_path_with_ecmp(paths, src_mac, dst_mac)
+        else:
+            self.logger.info("Selected single path: %s", paths[0])
+            self._install_path_with_ecmp([paths[0]], src_mac, dst_mac)
         
         # Forward the current packet
-        if dpid in chosen_path:
-            idx = chosen_path.index(dpid)
-            if idx == len(chosen_path) - 1:
-                out_port = self.hosts[dst_mac][1]
-            else:
-                next_switch = chosen_path[idx + 1]
+        if dst_switch == dpid:
+            # Already at destination switch
+            out_port = self.hosts[dst_mac][1]
+        elif dpid in paths[0]:
+            # Find next hop
+            idx = paths[0].index(dpid)
+            if idx < len(paths[0]) - 1:
+                next_switch = paths[0][idx + 1]
                 out_port = self.adjacency[dpid][next_switch]['port']
-            
-            actions = [parser.OFPActionOutput(out_port)]
-            self._send_packet_out(datapath, msg, in_port, actions)
+            else:
+                out_port = self.hosts[dst_mac][1]
+        else:
+            # Shouldn't happen, but flood as fallback
+            out_port = ofproto.OFPP_FLOOD
+        
+        actions = [parser.OFPActionOutput(out_port)]
+        self._send_packet_out(datapath, msg, in_port, actions)
 
     def _send_packet_out(self, datapath, msg, in_port, actions):
         """Send a packet out from the switch."""

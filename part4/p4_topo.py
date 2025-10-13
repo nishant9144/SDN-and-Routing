@@ -23,13 +23,9 @@ def flush_set(node, intf, cidr):
     node.cmd(f"ip link set {intf} up")
 
 def set_if(node, ifname, ip_cidr=None, mac=None):
-    # node.cmd(f"ip addr flush dev {intf}")
-    # node.cmd(f"ip addr add {cidr} dev {intf}")
-    # node.cmd(f"ip link set {intf} up")
-    
     node.cmd(f'ip addr flush dev {ifname}')
-    # if mac:
-    #     node.cmd(f'ip link set dev {ifname} address {mac}')
+    if mac:
+        node.cmd(f'ip link set dev {ifname} address {mac}')
     if ip_cidr:
         node.cmd(f'ip addr add {ip_cidr} dev {ifname}')
     node.cmd(f'ip link set {ifname} up')
@@ -51,8 +47,8 @@ def build():
 
     info('*** Host <-> switch links (fixed names)\n')
     # attach hosts to the routers
-    link_h1 = net.addLink(h1, routers[0], bw=10)
-    link_h2 = net.addLink(h2, routers[-1], bw=10)
+    link_h1 = net.addLink(h1, routers[0], intfName1='h1-eth1', intfName2='s1-eth1', bw=10)
+    link_h2 = net.addLink(h2, routers[-1], intfName1='h2-eth1', intfName2='s6-eth3', bw=10)
     
     
     info('*** Inter-switch ring links (fixed names)\n')
@@ -74,7 +70,7 @@ def build():
 
     info('*** Assign IPs/MACs on ALL inter-switch links (per config)\n')
     # s1 <-> s2 (10.0.13.0/24)
-    set_if(routers[0], 's1-eth2', ip_cidr='10.0.13.1/24', mac='00:00:00:00:01:02')
+    set_if(routers[0], 's1-eth2', ip_cidr='10.0.13.1/24', mac='00:00:00:00:01:04')
     set_if(routers[1], 's2-eth1', ip_cidr='10.0.13.2/24', mac='00:00:00:00:02:01')
 
     # s2 <-> s3 (10.0.23.0/24)
@@ -86,7 +82,7 @@ def build():
     set_if(routers[5], 's6-eth1', ip_cidr='10.0.36.2/24', mac='00:00:00:00:06:01')
 
     # s6 <-> s5 (10.0.56.0/24)
-    set_if(routers[5], 's6-eth2', ip_cidr='10.0.56.2/24', mac='00:00:00:00:06:02')
+    set_if(routers[5], 's6-eth2', ip_cidr='10.0.56.2/24', mac='00:00:00:00:06:04')
     set_if(routers[4], 's5-eth2', ip_cidr='10.0.56.1/24', mac='00:00:00:00:05:02')
 
     # s5 <-> s4 (10.0.45.0/24)
@@ -116,3 +112,13 @@ def build():
     
     return net
     
+if __name__ == '__main__':
+    setLogLevel('info')
+    net = build()
+    
+    info('*** Network is ready. Starting CLI...\n')
+    from mininet.cli import CLI
+    CLI(net)
+    
+    info('*** Stopping network\n')
+    net.stop()

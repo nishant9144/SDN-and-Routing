@@ -72,7 +72,7 @@
   "links": [
     { "src": "s1", "dst": "s2", "cost": 10 },
     { "src": "s2", "dst": "s3", "cost": 10 },
-    { "src": "s3", "dst": "s6", "cost": 10},
+    { "src": "s3", "dst": "s6", "cost": 10 },
     { "src": "s6", "dst": "s5", "cost": 10 },
     { "src": "s5", "dst": "s4", "cost": 20 },
     { "src": "s4", "dst": "s1", "cost": 10}

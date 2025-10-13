@@ -78,6 +78,13 @@ def main():
 
     a_str, b_str = args.subnet_start.split(".")
     start_a, start_b = int(a_str), int(b_str)
+------------------------------------------------------------
+Server listening on TCP port 5001
+TCP window size: 85.3 KByte (default)
+------------------------------------------------------------
+[  1] local 10.0.67.2 port 5001 connected with 10.0.12.2 port 35522
+[ ID] Interval       Transfer     Bandwidth
+[  1] 0.0000-15.3680 sec  17.5 MBytes  9.55 Mbits/sec
 
     # 1) Topology
     net = build()
