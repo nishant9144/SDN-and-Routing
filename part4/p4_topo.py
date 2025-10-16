@@ -16,6 +16,10 @@ class LinuxRouter(Host):
     def config(self, **params):
         super().config(**params)
         self.cmd("sysctl -w net.ipv4.ip_forward=1")
+ 
+    def terminate(self):
+        self.cmd('killall zebra ospfd')
+        super(Host, self).terminate()
 
 def flush_set(node, intf, cidr):
     node.cmd(f"ip addr flush dev {intf}")
@@ -38,25 +42,25 @@ def build():
     )
 
     n = 6
-    routers = [net.addHost(f"s{i+1}", cls=LinuxRouter) for i in range(n)]
+    routers = [net.addHost(f"s{i+1}", cls=LinuxRouter, inNamespace=True) for i in range(n)]
 
 
     info('*** Add hosts\n')
-    h1 = net.addHost('h1', ip='10.0.12.2/24', mac='00:00:00:00:01:02')
-    h2 = net.addHost('h2', ip='10.0.67.2/24', mac='00:00:00:00:06:02')
+    h1 = net.addHost('h1', ip='10.0.12.2/24', mac='00:00:00:00:01:02', inNamespace=True)
+    h2 = net.addHost('h2', ip='10.0.67.2/24', mac='00:00:00:00:06:02', inNamespace=True)
 
     info('*** Host <-> switch links (fixed names)\n')
     # attach hosts to the routers
-    link_h1 = net.addLink(h1, routers[0], intfName1='h1-eth1', intfName2='s1-eth1', bw=10)
-    link_h2 = net.addLink(h2, routers[-1], intfName1='h2-eth1', intfName2='s6-eth3', bw=10)
+    link_h1 = net.addLink(h1, routers[0], intfName1='h1-eth1', intfName2='s1-eth1', bw=100)
+    link_h2 = net.addLink(h2, routers[-1], intfName1='h2-eth1', intfName2='s6-eth3', bw=100)
     
     
     info('*** Inter-switch ring links (fixed names)\n')
     net.addLink(routers[0], routers[1], intfName1='s1-eth2', intfName2='s2-eth1')  # 10.0.13.0/24
-    net.addLink(routers[1], routers[2], intfName1='s2-eth2', intfName2='s3-eth1')  # 10.0.23.0/24
+    net.addLink(routers[1], routers[2], intfName1='s2-eth2', intfName2='s3-eth1', bw=100)  # 10.0.23.0/24
     net.addLink(routers[2], routers[5], intfName1='s3-eth2', intfName2='s6-eth1')  # 10.0.36.0/24
     net.addLink(routers[5], routers[4], intfName1='s6-eth2', intfName2='s5-eth2')  # 10.0.56.0/24
-    net.addLink(routers[4], routers[3], intfName1='s5-eth1', intfName2='s4-eth2')  # 10.0.45.0/24
+    net.addLink(routers[4], routers[3], intfName1='s5-eth1', intfName2='s4-eth2', bw=10)  # 10.0.45.0/24
     net.addLink(routers[3], routers[0], intfName1='s4-eth1', intfName2='s1-eth3')  # 10.0.14.0/24
 
     info('*** Build & start\n')
@@ -111,14 +115,3 @@ def build():
     h2.cmd(f"ip route replace default via {h2_gw}")
     
     return net
-    
-if __name__ == '__main__':
-    setLogLevel('info')
-    net = build()
-    
-    info('*** Network is ready. Starting CLI...\n')
-    from mininet.cli import CLI
-    CLI(net)
-    
-    info('*** Stopping network\n')
-    net.stop()

@@ -29,26 +29,34 @@ def start_frr_ospf(net, meta, host_if_cost=1):
         rn_if_name = _iface_by_ip(n, rn_if_ip)
 
         n.cmd(f"bash -lc \"cat > /tmp/{rname}/zebra.conf <<'EOF'\n"
+              f"hostname {rname}\n"
               f"log file /tmp/{rname}/log/zebra.log\n"
               f"EOF\"")
 
         # Minimal ospfd.conf with per-interface costs
         n.cmd(f"bash -lc \"cat > /tmp/{rname}/ospfd.conf <<'EOF'\n"
+              #f"frr defaults traditional\n"  # <-- added this line
+              f"hostname {rname}\n"
               f"log file /tmp/{rname}/log/ospfd.log\n"
               f"router ospf\n"
+              f" maximum-paths 1\n"  # <-- disables ECMP
               f" router-id {int(rname[1:])}.{int(rname[1:])}.{int(rname[1:])}.{int(rname[1:])}\n"
               f" network 10.0.0.0/8 area 0\n"
               f" network 10.255.0.0/16 area 0\n"
-              f"!\n"
               + "\n".join(
-                    f"interface {ifn}\n ip ospf cost {cost}\n!"
-                    for ifn, cost in if_costs[rname].items()
-                ) + "\n"
+				f"interface {ifn}\n"
+    			f" ip ospf cost {cost}\n"
+    			f" ip ospf hello-interval 2\n"
+    			f" ip ospf dead-interval 6\n"
+    			f" ip ospf network point-to-point\n"
+    			f"!"
+				for ifn, cost in if_costs[rname].items()
+			  ) + "\n"            
               + (f"interface {r1_if_name}\n ip ospf cost {host_if_cost}\n ip ospf passive\n!\n"
                  if r1_if_name else "")
               + (f"interface {rn_if_name}\n ip ospf cost {host_if_cost}\n ip ospf passive\n!\n"
                  if rn_if_name else "")
-              + "line vty\n exec-timeout 0 0\n login\n!\n"
+              + "line vty\n exec-timeout 0 0\n no login\n!\n"
               + "EOF\"")
 
         # Start daemons in the netns
@@ -58,7 +66,7 @@ def start_frr_ospf(net, meta, host_if_cost=1):
               f"-i /tmp/{rname}/run/ospfd.pid -z /tmp/{rname}/run/zserv.api")
 
     print('*** FRR (zebra+ospfd) started on all routers; waiting a bit…')
-    time.sleep(3)
+    time.sleep(1)
 
 def wait_for_convergence(net, meta, timeout=120, poll=1.0):
     """Convergence proxy: r1 has OSPF route to h2/24 AND rN has route to h1/24."""
